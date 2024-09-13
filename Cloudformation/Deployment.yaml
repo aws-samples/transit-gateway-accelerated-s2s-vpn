@@ -1,0 +1,288 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Creates Spoke VPCs, Transit Gateway with attachments, and Site-to-Site VPN with Global Accelerator.'
+
+Parameters:
+  VPACidrBlock:
+    Type: String
+    Default: 10.0.0.0/16
+    Description: 'CIDR block for Spoke VPC A'
+
+  VPAPrivateSubnetCidrBlock:
+    Type: String
+    Default: 10.0.0.0/24
+    Description: 'CIDR block for Private Subnet in Spoke VPC A'
+
+  VPATGWSubnetCidrBlock:
+    Type: String
+    Default: 10.0.1.0/28
+    Description: 'CIDR block for Transit Gateway Subnet in Spoke VPC A'
+
+  VPBCidrBlock:
+    Type: String
+    Default: 10.1.0.0/16
+    Description: 'CIDR block for Spoke VPC B'
+
+  VPBPrivateSubnetCidrBlock:
+    Type: String
+    Default: 10.1.0.0/24
+    Description: 'CIDR block for Private Subnet in Spoke VPC B'
+
+  VPBTGWSubnetCidrBlock:
+    Type: String
+    Default: 10.1.1.0/28
+    Description: 'CIDR block for Transit Gateway Subnet in Spoke VPC B'
+
+  CustomerGatewayIp:
+    Type: String
+    AllowedPattern: '.+'
+    Description: 'Public IP address of the customer gateway for the Site-to-Site VPN'
+
+  TransitGatewayBGPASN:
+    Type: String
+    Default: 64512
+    Description: 'BGP ASN for AWS Transit gateway'
+
+  CustomerGatewayBGPASN:
+    Type: String
+    Default: 65000
+    Description: 'BGP ASN of the customer gateway for the Site-to-Site VPN'
+
+Resources:
+
+  SpokeVPCA:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VPACidrBlock
+      Tags:
+        - Key: Name
+          Value: Spoke VPC A
+
+  SpokeVPCAPrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SpokeVPCA
+      CidrBlock: !Ref VPAPrivateSubnetCidrBlock
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      MapPublicIpOnLaunch: false
+
+  SpokeVPCATGWSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SpokeVPCA
+      CidrBlock: !Ref VPATGWSubnetCidrBlock
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      MapPublicIpOnLaunch: false
+
+  SpokeVPCB:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VPBCidrBlock
+      Tags:
+        - Key: Name
+          Value: Spoke VPC B
+
+  SpokeVPCBPrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SpokeVPCB
+      CidrBlock: !Ref VPBPrivateSubnetCidrBlock
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      MapPublicIpOnLaunch: false
+
+  SpokeVPCBTGWSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SpokeVPCB
+      CidrBlock: !Ref VPBTGWSubnetCidrBlock
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      MapPublicIpOnLaunch: false
+
+  TransitGateway:
+    Type: AWS::EC2::TransitGateway
+    Properties:
+      Description: 'Transit Gateway for VPC A and VPC B'
+      AmazonSideAsn: !Ref TransitGatewayBGPASN 
+      DnsSupport: enable
+      VpnEcmpSupport: enable
+      AutoAcceptSharedAttachments: enable
+
+  TGWAttachmentA:
+    Type: AWS::EC2::TransitGatewayAttachment
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+      VpcId: !Ref SpokeVPCA
+      SubnetIds:
+        - !Ref SpokeVPCATGWSubnet
+      Tags:
+        - Key: Name
+          Value: 'TGW Attachment for VPC A'
+
+  TGWAttachmentB:
+    Type: AWS::EC2::TransitGatewayAttachment
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+      VpcId: !Ref SpokeVPCB
+      SubnetIds:
+        - !Ref SpokeVPCBTGWSubnet
+      Tags:
+        - Key: Name
+          Value: 'TGW Attachment for VPC B'
+
+  RouteTableA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref SpokeVPCA
+      Tags:
+        - Key: Name
+          Value: Private Route Table for VPC A
+
+  RouteA:
+    Type: AWS::EC2::Route
+    DependsOn: TGWAttachmentA
+    Properties:
+      RouteTableId: !Ref RouteTableA
+      DestinationCidrBlock: 0.0.0.0/0
+      TransitGatewayId: !Ref TransitGateway
+
+  RouteTableAssociationA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SpokeVPCAPrivateSubnet
+      RouteTableId: !Ref RouteTableA
+
+  RouteTableB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref SpokeVPCB
+      Tags:
+        - Key: Name
+          Value: Private Route Table for VPC B
+
+  RouteB:
+    Type: AWS::EC2::Route
+    DependsOn: TGWAttachmentB
+    Properties:
+      RouteTableId: !Ref RouteTableB
+      DestinationCidrBlock: 0.0.0.0/0
+      TransitGatewayId: !Ref TransitGateway
+
+  RouteTableAssociationB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SpokeVPCBPrivateSubnet
+      RouteTableId: !Ref RouteTableB
+
+  SiteToSiteVPN:
+    Type: AWS::EC2::VPNConnection
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+      CustomerGatewayId: !Ref CustomerGateway
+      Type: ipsec.1
+      EnableAcceleration: true
+
+  CustomerGateway:
+    Type: AWS::EC2::CustomerGateway
+    Properties:
+      BgpAsn: !Ref CustomerGatewayBGPASN
+      IpAddress: !Ref CustomerGatewayIp
+      Type: ipsec.1
+
+  VPCFlowLogsKMSKey:
+    Type: AWS::KMS::Key
+    Properties: 
+      Description: "KMS Key for encrypting VPC Flow Logs"
+      Enabled: true
+      EnableKeyRotation: true
+      KeyPolicy: 
+        Version: "2012-10-17"
+        Statement: 
+          - Sid: "Allow administration of the key"
+            Effect: "Allow"
+            Principal: 
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: 
+              - "kms:*"
+            Resource: "*"
+          - Sid: "Allow CloudWatch Logs to use the key"
+            Effect: "Allow"
+            Principal:
+              Service: logs.amazonaws.com
+            Action:
+              - "kms:Encrypt"
+              - "kms:Decrypt"
+              - "kms:ReEncrypt*"
+              - "kms:GenerateDataKey*"
+              - "kms:DescribeKey"
+            Resource: "*"
+          - Sid: "Allow VPC Flow Logs to use the key"
+            Effect: "Allow"
+            Principal:
+              Service: vpc-flow-logs.amazonaws.com
+            Action:
+              - "kms:Encrypt"
+              - "kms:Decrypt"
+              - "kms:ReEncrypt*"
+              - "kms:GenerateDataKey*"
+              - "kms:DescribeKey"
+            Resource: "*"
+
+  VPCFlowLogsIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: vpc-flow-logs.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: VPCFlowLogsPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  VPCFlowLogsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 30
+      KmsKeyId: !GetAtt VPCFlowLogsKMSKey.Arn
+
+  VPCAFlowLogs:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      ResourceId: !Ref SpokeVPCA
+      ResourceType: VPC
+      TrafficType: ALL
+      LogDestinationType: cloud-watch-logs
+      LogGroupName: !Ref VPCFlowLogsLogGroup
+      DeliverLogsPermissionArn: !GetAtt VPCFlowLogsIAMRole.Arn
+
+  VPCBFlowLogs:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      ResourceId: !Ref SpokeVPCB
+      ResourceType: VPC
+      TrafficType: ALL
+      LogDestinationType: cloud-watch-logs
+      LogGroupName: !Ref VPCFlowLogsLogGroup
+      DeliverLogsPermissionArn: !GetAtt VPCFlowLogsIAMRole.Arn
+
+
+Outputs:
+  VpcAId:
+    Description: 'VPC A ID'
+    Value: !Ref SpokeVPCA
+
+  VpcBId:
+    Description: 'VPC B ID'
+    Value: !Ref SpokeVPCB
+
+  TransitGatewayId:
+    Description: 'Transit Gateway ID'
+    Value: !Ref TransitGateway
